@@ -1,21 +1,40 @@
 {
   "name": "knowledge-gatherer",
-  "module": "src/index.tsx",
+  "description": "Fetches remotes knowledge stores and extracts interesting nuggets",
+  "version": "0.0.0",
+  "author": "Giuseppe Rota",
+  "bugs": "https://github.com/grota/knowledge-gatherer",
   "type": "module",
+  "repository": "grota/knowledge-gatherer",
+  "files": [
+    "./bin",
+    "./dist",
+    "./oclif.manifest.json"
+  ],
+  "homepage": "https://github.com/grota/knowledge-gatherer",
+  "license": "MIT",
+  "module": "src/index.tsx",
   "private": true,
   "scripts": {
-    "dev": "bun run --watch src/index.tsx"
+    "build": "shx rm -rf dist && tsc -b",
+    "prepack": "oclif manifest && oclif readme",
+    "version": "oclif readme && git add README.md"
   },
   "devDependencies": {
+    "@oclif/prettier-config": "^0.2.1",
     "@types/bun": "latest",
-    "@types/node": "^18.19.130",
-    "ts-node": "^10.9.2"
+    "oclif": "^4",
+    "shx": "^0.3.4"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
     "@oclif/core": "^4.8.2",
+    "@oclif/plugin-autocomplete": "^3.2.40",
+    "@oclif/plugin-commands": "^4.1.40",
+    "@oclif/plugin-help": "^6.2.37",
+    "@oclif/plugin-not-found": "^3.2.74",
     "@opencode-ai/sdk": "^1.2.15",
     "@opentui/core": "^0.1.84",
     "@opentui/react": "^0.1.84",
@@ -26,8 +45,15 @@
   },
   "oclif": {
     "bin": "kg",
-    "commands": "./src/commands",
+    "commands": "./dist/commands",
     "dirname": "kg",
-    "topicSeparator": " "
+    "plugins": [
+      "@oclif/plugin-autocomplete",
+      "@oclif/plugin-commands",
+      "@oclif/plugin-help",
+      "@oclif/plugin-not-found"
+    ],
+    "topicSeparator": " ",
+    "additionalHelpFlags": ["-h"]
   }
 }

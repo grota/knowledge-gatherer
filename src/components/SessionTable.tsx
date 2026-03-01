@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import type { Session } from "@opencode-ai/sdk/client";
+import type { GlobalSession } from "@opencode-ai/sdk/v2";
 
 type SortField = "created" | "updated";
 type SortDir = "asc" | "desc";
@@ -34,10 +34,10 @@ function timeAgo(ms: number): string {
 }
 
 type Props = {
-  sessions: Session[];
+  sessions: GlobalSession[];
   messageCounts: Record<string, number>;
   focused: boolean;
-  onOpenSession: (session: Session) => void;
+  onOpenSession: (session: GlobalSession) => void;
 };
 
 export function SessionTable({ sessions, messageCounts, focused, onOpenSession }: Props) {
@@ -92,25 +92,23 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
           setRowIndex(0);
         }
         break;
-      case "enter": {
+      case "enter":
+      case "return": {
         const session = pageSessions[rowIndex];
         if (session) onOpenSession(session);
         break;
       }
       case "c":
-        // Toggle sort field: created / updated
         setSortField((f) => (f === "created" ? "updated" : "created"));
         setPage(0);
         setRowIndex(0);
         break;
       case "u":
-        // Toggle sort field to updated
         setSortField("updated");
         setPage(0);
         setRowIndex(0);
         break;
       case "r":
-        // Reverse sort direction
         setSortDir((d) => (d === "asc" ? "desc" : "asc"));
         setPage(0);
         setRowIndex(0);
@@ -122,9 +120,12 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
 
   // Dynamic column widths based on terminal width
   const availWidth = Math.max(80, width);
-  // title gets leftover space; fixed cols: created(26), updated(26), msgs(6)
-  const fixedWidth = 26 + 1 + 26 + 1 + 6 + 4; // +4 for separators/padding
-  const titleWidth = Math.max(20, availWidth - fixedWidth - 4);
+  // Fixed cols: created(26), updated(26), msgs(6), dir gets remainder alongside title
+  const fixedWidth = 26 + 1 + 26 + 1 + 6 + 4; // separators/padding
+  const remaining = Math.max(40, availWidth - fixedWidth - 4);
+  // Split remaining between title (60%) and dir (40%), min 15 each
+  const titleWidth = Math.max(15, Math.floor(remaining * 0.6));
+  const dirWidth = Math.max(15, remaining - titleWidth - 1); // -1 for separator
 
   const sortIndicator = (field: SortField) => {
     if (sortField !== field) return " ";
@@ -138,6 +139,14 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
 
   const padR = (str: string, len: number): string => str.padEnd(len).slice(0, len);
 
+  // Show only the last two path segments for brevity
+  function shortDir(dir: string): string {
+    const parts = dir.replace(/\/$/, "").split("/").filter(Boolean);
+    if (parts.length === 0) return dir;
+    if (parts.length === 1) return `/${parts[0]}`;
+    return `…/${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+  }
+
   return (
     <box flexDirection="column" flexGrow={1} border borderColor={borderColor}>
       {/* Header */}
@@ -148,6 +157,10 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
       >
         <text fg="#7aa2f7" width={titleWidth}>
           <strong>{"Title".padEnd(titleWidth)}</strong>
+        </text>
+        <text fg="#565f89"> </text>
+        <text fg="#7aa2f7" width={dirWidth}>
+          <strong>{"Dir".padEnd(dirWidth)}</strong>
         </text>
         <text fg="#565f89"> </text>
         <text fg={sortField === "created" ? "#7dcfff" : "#7aa2f7"} width={26}>
@@ -196,6 +209,13 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
                 width={titleWidth}
               >
                 {truncate(session.title || "(untitled)", titleWidth)}
+              </text>
+              <text fg="#565f89"> </text>
+              <text
+                fg={isHighlighted ? "#bb9af7" : "#565f89"}
+                width={dirWidth}
+              >
+                {truncate(shortDir(session.directory), dirWidth)}
               </text>
               <text fg="#565f89"> </text>
               <text fg={isHighlighted ? "#7dcfff" : "#6d7fa8"} width={26}>

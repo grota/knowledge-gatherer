@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
-import { useKeyboard } from "@opentui/react";
-import type { OpencodeClient, Session, Part } from "@opencode-ai/sdk/client";
+import { useState, useEffect, useRef } from "react";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import type { OpencodeClient, GlobalSession, Part } from "@opencode-ai/sdk/v2";
 
 type MessageRole = "user" | "assistant";
 
@@ -8,7 +8,7 @@ type DisplayMessage = {
   id: string;
   role: MessageRole;
   created: number;
-  textContent: string;
+  lines: string[];  // pre-split lines of text content
 };
 
 function formatDate(ms: number): string {
@@ -22,14 +22,17 @@ function formatDate(ms: number): string {
 }
 
 // Extract readable text from parts (text parts only; skip tool/reasoning/etc.)
-function extractText(parts: Part[]): string {
+// Returns null if no meaningful text content.
+function extractText(parts: Part[]): string | null {
   const texts: string[] = [];
   for (const part of parts) {
     if (part.type === "text" && !part.synthetic && !part.ignored) {
-      texts.push(part.text.trim());
+      const t = part.text.trim();
+      if (t) texts.push(t);
     }
   }
-  return texts.join("\n") || "(no text content)";
+  if (texts.length === 0) return null;
+  return texts.join("\n");
 }
 
 type LoadingState =
@@ -38,14 +41,32 @@ type LoadingState =
   | { status: "done"; messages: DisplayMessage[] };
 
 type Props = {
-  session: Session;
+  session: GlobalSession;
   client: OpencodeClient;
   onBack: () => void;
+  onAppendToScratchpad: (text: string) => void;
+  onToggleScratchpad: () => void;
+  focused?: boolean; // if false, keyboard input is suppressed (scratchpad has focus)
 };
 
-export function SessionDetail({ session, client, onBack }: Props) {
+export function SessionDetail({ session, client, onBack, onAppendToScratchpad, onToggleScratchpad, focused = true }: Props) {
+  const { width } = useTerminalDimensions();
   const [state, setState] = useState<LoadingState>({ status: "loading" });
-  const [scrollOffset, setScrollOffset] = useState(0);
+
+  // msgIndex: which message is "selected" (j/k)
+  const [msgIndex, setMsgIndex] = useState(0);
+  // lineOffset: how many lines we've scrolled within the visible window (alt+j/k)
+  const [lineOffset, setLineOffset] = useState(0);
+
+  // Keep refs for keyboard handler freshness
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const msgIndexRef = useRef(msgIndex);
+  msgIndexRef.current = msgIndex;
+  const lineOffsetRef = useRef(lineOffset);
+  lineOffsetRef.current = lineOffset;
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
 
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +74,7 @@ export function SessionDetail({ session, client, onBack }: Props) {
     async function load() {
       setState({ status: "loading" });
       try {
-        const resp = await client.session.messages({ path: { id: session.id } });
+        const resp = await client.session.messages({ sessionID: session.id });
         if (cancelled) return;
 
         if (resp.error) {
@@ -64,15 +85,17 @@ export function SessionDetail({ session, client, onBack }: Props) {
         const displayMessages: DisplayMessage[] = [];
         for (const entry of resp.data ?? []) {
           const { info, parts } = entry;
-          // Only user and assistant roles
           if (info.role !== "user" && info.role !== "assistant") continue;
 
           const text = extractText(parts);
+          // Skip messages with no meaningful content
+          if (text === null) continue;
+
           displayMessages.push({
             id: info.id,
             role: info.role as MessageRole,
             created: info.time.created,
-            textContent: text,
+            lines: text.split("\n"),
           });
         }
 
@@ -80,8 +103,11 @@ export function SessionDetail({ session, client, onBack }: Props) {
         displayMessages.sort((a, b) => a.created - b.created);
 
         setState({ status: "done", messages: displayMessages });
-        // Scroll to bottom on load
-        setScrollOffset(Math.max(0, displayMessages.length - 1));
+        // Start at last message
+        if (displayMessages.length > 0) {
+          setMsgIndex(displayMessages.length - 1);
+        }
+        setLineOffset(0);
       } catch (e) {
         if (!cancelled) {
           setState({
@@ -93,50 +119,96 @@ export function SessionDetail({ session, client, onBack }: Props) {
     }
 
     load();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [session.id]);
 
   useKeyboard((key) => {
+    const s = stateRef.current;
+
+    // Esc/q always work (back) and Space always toggles scratchpad regardless of focus
     if (key.name === "escape" || key.name === "q") {
       onBack();
       return;
     }
 
-    if (state.status !== "done") return;
-
-    const total = state.messages.length;
-    switch (key.name) {
-      case "up":
-      case "k":
-        setScrollOffset((o) => Math.max(0, o - 1));
-        break;
-      case "down":
-      case "j":
-        setScrollOffset((o) => Math.min(Math.max(0, total - 1), o + 1));
-        break;
-      case "pageup":
-        setScrollOffset((o) => Math.max(0, o - 5));
-        break;
-      case "pagedown":
-        setScrollOffset((o) => Math.min(Math.max(0, total - 1), o + 5));
-        break;
-      case "home":
-      case "g":
-        setScrollOffset(0);
-        break;
-      case "end":
-        setScrollOffset(Math.max(0, total - 1));
-        break;
+    if (key.name === "space") {
+      onToggleScratchpad();
+      return;
     }
-    // Shift+G = go to end (vim-style)
-    if (key.shift && key.name === "g") {
-      setScrollOffset(Math.max(0, total - 1));
+
+    // All other keys require this pane to be focused
+    if (!focusedRef.current) return;
+
+    if (s.status !== "done") return;
+    const total = s.messages.length;
+    if (total === 0) return;
+
+    // y: append selected message to scratchpad
+    if (key.name === "y") {
+      const msg = s.messages[msgIndexRef.current];
+      if (msg) {
+        const label = msg.role === "user" ? "You" : "Agent";
+        const header = `--- ${label} (${formatDate(msg.created)}) ---`;
+        onAppendToScratchpad(`${header}\n${msg.lines.join("\n")}\n`);
+      }
+      return;
+    }
+
+    // j/k: message-granularity navigation
+    if (!key.meta && key.name === "j") {
+      setMsgIndex((i) => Math.min(total - 1, i + 1));
+      setLineOffset(0);
+      return;
+    }
+    if (!key.meta && key.name === "k") {
+      setMsgIndex((i) => Math.max(0, i - 1));
+      setLineOffset(0);
+      return;
+    }
+
+    // alt+j / alt+k: line scroll within the window
+    if (key.meta && key.name === "j") {
+      setLineOffset((o) => o + 1);
+      return;
+    }
+    if (key.meta && key.name === "k") {
+      setLineOffset((o) => Math.max(0, o - 1));
+      return;
+    }
+
+    // g/G: jump to first/last message
+    if (!key.shift && key.name === "g") {
+      setMsgIndex(0);
+      setLineOffset(0);
+      return;
+    }
+    if ((key.shift && key.name === "g") || key.name === "end") {
+      setMsgIndex(total - 1);
+      setLineOffset(0);
+      return;
+    }
+    if (key.name === "home") {
+      setMsgIndex(0);
+      setLineOffset(0);
+      return;
+    }
+
+    // pageup/pagedown: jump by 5 messages
+    if (key.name === "pageup") {
+      setMsgIndex((i) => Math.max(0, i - 5));
+      setLineOffset(0);
+      return;
+    }
+    if (key.name === "pagedown") {
+      setMsgIndex((i) => Math.min(total - 1, i + 5));
+      setLineOffset(0);
+      return;
     }
   });
 
-  const VISIBLE_MESSAGES = 15;
+  // Available height for the message pane (rough estimate: terminal height minus header/footer rows)
+  const paneHeight = Math.max(10, (useTerminalDimensions().height) - 6);
+  const contentWidth = Math.max(40, width - 4);
 
   return (
     <box flexDirection="column" flexGrow={1} border borderColor="#7aa2f7">
@@ -145,11 +217,11 @@ export function SessionDetail({ session, client, onBack }: Props) {
         <text fg="#7dcfff">
           <strong>{session.title || "(untitled)"}</strong>
         </text>
-        <text fg="#565f89">  [Esc/q to go back  ↑↓/j/k scroll  g/G top/bottom]</text>
+        <text fg="#565f89">  [Esc/q: back  j/k: msg  Alt+j/k: scroll  g/G: first/last  y: yank  Space: scratchpad]</text>
       </box>
 
       <box paddingX={1}>
-        <text fg="#414868">{"─".repeat(60)}</text>
+        <text fg="#414868">{"─".repeat(Math.max(10, contentWidth))}</text>
       </box>
 
       {/* Content */}
@@ -172,71 +244,123 @@ export function SessionDetail({ session, client, onBack }: Props) {
               <text fg="#565f89">No messages in this session.</text>
             </box>
           ) : (
-            <>
-              {/* Show a window of messages around scrollOffset */}
-              {(() => {
-                const total = state.messages.length;
-                const windowStart = Math.max(
-                  0,
-                  Math.min(scrollOffset, total - VISIBLE_MESSAGES)
-                );
-                const windowEnd = Math.min(total, windowStart + VISIBLE_MESSAGES);
-                const visible = state.messages.slice(windowStart, windowEnd);
-
-                return (
-                  <box flexDirection="column" flexGrow={1} paddingX={1}>
-                    {windowStart > 0 && (
-                      <box>
-                        <text fg="#565f89">
-                          ↑ {windowStart} more message{windowStart !== 1 ? "s" : ""} above
-                        </text>
-                      </box>
-                    )}
-                    {visible.map((msg) => {
-                      const isUser = msg.role === "user";
-                      const labelColor = isUser ? "#9ece6a" : "#7aa2f7";
-                      const label = isUser ? "You" : "Agent";
-                      // Wrap long lines at ~terminal width - some padding
-                      const lines = msg.textContent.split("\n");
-                      return (
-                        <box key={msg.id} flexDirection="column" marginBottom={1}>
-                          <box flexDirection="row">
-                            <text fg={labelColor}>
-                              <strong>{label}</strong>
-                            </text>
-                            <text fg="#565f89">  {formatDate(msg.created)}</text>
-                          </box>
-                          {lines.map((line, li) => (
-                            <box key={li} paddingLeft={2}>
-                              <text fg={isUser ? "#c0caf5" : "#a9b1d6"}>
-                                {line || " "}
-                              </text>
-                            </box>
-                          ))}
-                        </box>
-                      );
-                    })}
-                    {windowEnd < total && (
-                      <box>
-                        <text fg="#565f89">
-                          ↓ {total - windowEnd} more message
-                          {total - windowEnd !== 1 ? "s" : ""} below
-                        </text>
-                      </box>
-                    )}
-                  </box>
-                );
-              })()}
-
-              {/* Scroll position indicator */}
-              <box paddingX={1}>
-                <text fg="#565f89">
-                  Message {Math.min(scrollOffset + 1, state.messages.length)}/
-                  {state.messages.length}
-                </text>
-              </box>
-            </>
+            <MessagePane
+              messages={state.messages}
+              selectedIndex={msgIndex}
+              lineOffset={lineOffset}
+              paneHeight={paneHeight}
+              contentWidth={contentWidth}
+            />
           )}
+        </box>
+      )}
+
+      {/* Footer */}
+      {state.status === "done" && state.messages.length > 0 && (
+        <box paddingX={1}>
+          <text fg="#565f89">
+            {`Msg ${msgIndex + 1}/${state.messages.length}`}
+          </text>
+        </box>
+      )}
+    </box>
+  );
+}
+
+type MessagePaneProps = {
+  messages: DisplayMessage[];
+  selectedIndex: number;
+  lineOffset: number;
+  paneHeight: number;
+  contentWidth: number;
+};
+
+function MessagePane({ messages, selectedIndex, lineOffset, paneHeight, contentWidth }: MessagePaneProps) {
+  // Build a flat list of renderable "rows": each message has a header row + its lines
+  type Row =
+    | { kind: "header"; msgIndex: number; role: MessageRole; created: number }
+    | { kind: "line"; msgIndex: number; text: string }
+    | { kind: "gap" };
+
+  const rows: Row[] = [];
+  for (let mi = 0; mi < messages.length; mi++) {
+    const msg = messages[mi];
+    if (!msg) continue;
+    if (mi > 0) rows.push({ kind: "gap" });
+    rows.push({ kind: "header", msgIndex: mi, role: msg.role, created: msg.created });
+    for (const line of msg.lines) {
+      rows.push({ kind: "line", msgIndex: mi, text: line });
+    }
+  }
+
+  // Find the first row index belonging to the selected message
+  const selectedFirstRow = rows.findIndex(
+    (r) => r.kind !== "gap" && r.msgIndex === selectedIndex
+  );
+
+  // Compute visible window: anchor on selectedFirstRow, then apply lineOffset
+  const rawStart = Math.max(0, selectedFirstRow + lineOffset);
+  // Don't scroll past end
+  const maxStart = Math.max(0, rows.length - paneHeight);
+  const windowStart = Math.min(rawStart, maxStart);
+  const windowEnd = Math.min(rows.length, windowStart + paneHeight);
+  const visibleRows = rows.slice(windowStart, windowEnd);
+
+  const aboveCount = windowStart;
+  const belowCount = rows.length - windowEnd;
+
+  return (
+    <box flexDirection="column" flexGrow={1} paddingX={1}>
+      {aboveCount > 0 && (
+        <box>
+          <text fg="#565f89">↑ {aboveCount} row{aboveCount !== 1 ? "s" : ""} above</text>
+        </box>
+      )}
+
+      {visibleRows.map((row, vi) => {
+        if (row.kind === "gap") {
+          return (
+            <box key={`gap-${windowStart + vi}`}>
+              <text fg="#414868"> </text>
+            </box>
+          );
+        }
+
+        const isSelected = row.msgIndex === selectedIndex;
+        const bg = isSelected ? "#1e2030" : undefined;
+
+        if (row.kind === "header") {
+          const isUser = row.role === "user";
+          const label = isUser ? "You" : "Agent";
+          const labelColor = isSelected
+            ? (isUser ? "#9ece6a" : "#7aa2f7")
+            : (isUser ? "#546e00" : "#3d59a1");
+          return (
+            <box key={`hdr-${row.msgIndex}`} flexDirection="row" backgroundColor={bg}>
+              <text fg={isSelected ? "#7dcfff" : "#565f89"}>{isSelected ? "▶ " : "  "}</text>
+              <text fg={labelColor}>
+                <strong>{label}</strong>
+              </text>
+              <text fg={isSelected ? "#a9b1d6" : "#414868"}>
+                {"  " + formatDate(row.created)}
+              </text>
+            </box>
+          );
+        }
+
+        // row.kind === "line"
+        return (
+          <box key={`line-${row.msgIndex}-${windowStart + vi}`} paddingLeft={2} backgroundColor={bg}>
+            <text fg={isSelected ? "#c0caf5" : "#787c99"} width={contentWidth - 2}>
+              {row.text || " "}
+            </text>
+          </box>
+        );
+      })}
+
+      {belowCount > 0 && (
+        <box>
+          <text fg="#565f89">↓ {belowCount} row{belowCount !== 1 ? "s" : ""} below</text>
         </box>
       )}
     </box>
