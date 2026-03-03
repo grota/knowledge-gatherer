@@ -127,6 +127,16 @@ type State =
 - **Types/interfaces**: PascalCase
 - **Constants**: camelCase (not SCREAMING_SNAKE_CASE unless truly global constants)
 
+### Code Comments
+
+Only comment code that needs clarification. Specifically, **always add a comment** when:
+
+- A workaround is used because of an external SDK or OS limitation (explain *why*, not just *what*).
+- Process-management tricks are used (e.g. `pgrep` + `kill` instead of the SDK's own `.close()` method — see `src/commands/opencode.tsx` for the pattern and the reason).
+- Non-obvious framework quirks are worked around (e.g. using `useKeyboard` exclusively instead of `<input>` + `useKeyboard` together, because the two compete for keystrokes in OpenTUI).
+
+Do **not** comment self-evident code.
+
 ### Error Handling
 
 ```typescript

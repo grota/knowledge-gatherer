@@ -1,11 +1,9 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import type { GlobalSession } from "@opencode-ai/sdk/v2";
 
 type SortField = "created" | "updated";
 type SortDir = "asc" | "desc";
-
-const PAGE_SIZE = 10;
 
 function formatDate(ms: number): string {
   const d = new Date(ms);
@@ -41,11 +39,17 @@ type Props = {
 };
 
 export function SessionTable({ sessions, messageCounts, focused, onOpenSession }: Props) {
-  const { width } = useTerminalDimensions();
+  const { width, height } = useTerminalDimensions();
   const [sortField, setSortField] = useState<SortField>("updated");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
   const [rowIndex, setRowIndex] = useState(0);
+
+  // Overhead rows: title-bar(1) + ProjectSelect-collapsed(3) + table-border-top(1)
+  // + header(1) + separator(1) + footer-margin(1) + footer-content(1) + table-border-bottom(1) = 10
+  const pageSize = Math.max(3, height - 10);
+  const pageSizeRef = useRef(pageSize);
+  pageSizeRef.current = pageSize;
 
   const sorted = [...sessions].sort((a, b) => {
     const aVal = sortField === "updated" ? a.time.updated : a.time.created;
@@ -53,10 +57,15 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
     return sortDir === "desc" ? bVal - aVal : aVal - bVal;
   });
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const pageStart = page * PAGE_SIZE;
-  const pageSessions = sorted.slice(pageStart, pageStart + PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const pageStart = page * pageSize;
+  const pageSessions = sorted.slice(pageStart, pageStart + pageSize);
   const absoluteIndex = pageStart + rowIndex;
+
+  // Clamp page when totalPages shrinks (e.g. terminal height decrease or filter change)
+  useEffect(() => {
+    setPage((p) => Math.min(p, Math.max(0, totalPages - 1)));
+  }, [totalPages]);
 
   useKeyboard((key) => {
     if (!focused) return;
@@ -68,7 +77,7 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
           setRowIndex((i) => i - 1);
         } else if (page > 0) {
           setPage((p) => p - 1);
-          setRowIndex(PAGE_SIZE - 1);
+          setRowIndex(pageSizeRef.current - 1);
         }
         break;
       case "down":
@@ -118,14 +127,18 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
 
   const borderColor = focused ? "#7aa2f7" : "#414868";
 
-  // Dynamic column widths based on terminal width
+  // Dynamic column widths based on terminal width.
+  // The directory column shows the full path and is the first to shrink when
+  // the terminal is too narrow.
   const availWidth = Math.max(80, width);
-  // Fixed cols: created(26), updated(26), msgs(6), dir gets remainder alongside title
-  const fixedWidth = 26 + 1 + 26 + 1 + 6 + 4; // separators/padding
+  // Fixed cols: created(26) + sep(1) + updated(26) + sep(1) + msgs(6) + border(2) + padding(2) + 2 seps before dates = 66
+  const fixedWidth = 26 + 1 + 26 + 1 + 6 + 4;
   const remaining = Math.max(40, availWidth - fixedWidth - 4);
-  // Split remaining between title (60%) and dir (40%), min 15 each
-  const titleWidth = Math.max(15, Math.floor(remaining * 0.6));
-  const dirWidth = Math.max(15, remaining - titleWidth - 1); // -1 for separator
+  const MIN_TITLE_WIDTH = 20;
+  // Give dir its full length if possible; if not, shrink dir before title.
+  const fullDirWidth = sessions.length > 0 ? Math.max(...sessions.map((s) => s.directory.length)) : 20;
+  const dirWidth = Math.max(0, Math.min(fullDirWidth, remaining - MIN_TITLE_WIDTH - 1));
+  const titleWidth = Math.max(MIN_TITLE_WIDTH, remaining - dirWidth - (dirWidth > 0 ? 1 : 0));
 
   const sortIndicator = (field: SortField) => {
     if (sortField !== field) return " ";
@@ -138,14 +151,6 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
   };
 
   const padR = (str: string, len: number): string => str.padEnd(len).slice(0, len);
-
-  // Show only the last two path segments for brevity
-  function shortDir(dir: string): string {
-    const parts = dir.replace(/\/$/, "").split("/").filter(Boolean);
-    if (parts.length === 0) return dir;
-    if (parts.length === 1) return `/${parts[0]}`;
-    return `…/${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
-  }
 
   return (
     <box flexDirection="column" flexGrow={1} border borderColor={borderColor}>
@@ -215,7 +220,7 @@ export function SessionTable({ sessions, messageCounts, focused, onOpenSession }
                 fg={isHighlighted ? "#bb9af7" : "#565f89"}
                 width={dirWidth}
               >
-                {truncate(shortDir(session.directory), dirWidth)}
+                {truncate(session.directory, dirWidth)}
               </text>
               <text fg="#565f89"> </text>
               <text fg={isHighlighted ? "#7dcfff" : "#6d7fa8"} width={26}>

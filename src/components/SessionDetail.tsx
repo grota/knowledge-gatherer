@@ -320,39 +320,40 @@ function MessagePane({ messages, selectedIndex, lineOffset, paneHeight, contentW
       {visibleRows.map((row, vi) => {
         if (row.kind === "gap") {
           return (
-            <box key={`gap-${windowStart + vi}`}>
+            <box key={`gap-${windowStart + vi}`} height={1}>
               <text fg="#414868"> </text>
             </box>
           );
         }
 
         const isSelected = row.msgIndex === selectedIndex;
-        const bg = isSelected ? "#1e2030" : undefined;
+        const bg = isSelected ? "#1e2030" : "#16161e";
 
         if (row.kind === "header") {
           const isUser = row.role === "user";
           const label = isUser ? "You" : "Agent";
-          const labelColor = isSelected
+          const cursorFg = isSelected ? "#7dcfff" : "#565f89";
+          const labelFg = isSelected
             ? (isUser ? "#9ece6a" : "#7aa2f7")
             : (isUser ? "#546e00" : "#3d59a1");
+          const dateFg = isSelected ? "#a9b1d6" : "#414868";
           return (
-            <box key={`hdr-${row.msgIndex}`} flexDirection="row" backgroundColor={bg}>
-              <text fg={isSelected ? "#7dcfff" : "#565f89"}>{isSelected ? "▶ " : "  "}</text>
-              <text fg={labelColor}>
-                <strong>{label}</strong>
-              </text>
-              <text fg={isSelected ? "#a9b1d6" : "#414868"}>
-                {"  " + formatDate(row.created)}
+            <box key={`hdr-${row.msgIndex}`} height={1} backgroundColor={bg}>
+              <text>
+                <span fg={cursorFg}>{isSelected ? "▶ " : "  "}</span>
+                <span fg={labelFg}><strong>{label}</strong></span>
+                <span fg={dateFg}>{"  " + formatDate(row.created)}</span>
               </text>
             </box>
           );
         }
 
         // row.kind === "line"
+        const displayText = (row.text || " ").slice(0, contentWidth - 3);
         return (
-          <box key={`line-${row.msgIndex}-${windowStart + vi}`} paddingLeft={2} backgroundColor={bg}>
-            <text fg={isSelected ? "#c0caf5" : "#787c99"} width={contentWidth - 2}>
-              {row.text || " "}
+          <box key={`line-${row.msgIndex}-${windowStart + vi}`} height={1} paddingLeft={2} backgroundColor={bg}>
+            <text fg={isSelected ? "#c0caf5" : "#787c99"}>
+              {displayText}
             </text>
           </box>
         );
