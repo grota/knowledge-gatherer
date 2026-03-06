@@ -31,7 +31,6 @@ export function OpencodeApp({ client }: Props) {
 
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [focus, setFocus] = useState<FocusArea>("table");
-  const [projectExpanded, setProjectExpanded] = useState(false);
   const [view, setView] = useState<View>("main");
   const [selectedSession, setSelectedSession] = useState<GlobalSession | null>(null);
 
@@ -167,7 +166,6 @@ export function OpencodeApp({ client }: Props) {
     }
 
     if ((key.ctrl && key.name === "c") || key.name === "escape") {
-      if (projectExpanded) return;
       tryQuit();
       return;
     }
@@ -309,9 +307,6 @@ export function OpencodeApp({ client }: Props) {
           dirCounts={dirCounts}
           selectedDir={selectedDir}
           focused={focus === "project"}
-          expanded={projectExpanded}
-          onExpand={() => setProjectExpanded(true)}
-          onCollapse={() => setProjectExpanded(false)}
           onSelect={handleDirSelect}
         />
       )}
