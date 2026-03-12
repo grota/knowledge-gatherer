@@ -275,7 +275,28 @@ type MessagePaneProps = {
   contentWidth: number;
 };
 
+// Wrap a single text line into segments of at most `maxWidth` characters.
+// Returns at least one element (empty string becomes [" "]).
+function wrapLine(line: string, maxWidth: number): string[] {
+  if (!line) return [" "];
+  const segments: string[] = [];
+  let remaining = line;
+  while (remaining.length > maxWidth) {
+    // Try to break at the last space within the allowed width
+    const slice = remaining.slice(0, maxWidth);
+    const lastSpace = slice.lastIndexOf(" ");
+    const breakAt = lastSpace > 0 ? lastSpace : maxWidth;
+    segments.push(remaining.slice(0, breakAt));
+    remaining = remaining.slice(breakAt === lastSpace ? lastSpace + 1 : breakAt);
+  }
+  if (remaining.length > 0) segments.push(remaining);
+  return segments;
+}
+
 function MessagePane({ messages, selectedIndex, lineOffset, paneHeight, contentWidth }: MessagePaneProps) {
+  // The actual text display area accounts for paddingLeft={2}
+  const textWidth = Math.max(20, contentWidth - 2);
+
   // Build a flat list of renderable "rows": each message has a header row + its lines
   type Row =
     | { kind: "header"; msgIndex: number; role: MessageRole; created: number }
@@ -289,7 +310,10 @@ function MessagePane({ messages, selectedIndex, lineOffset, paneHeight, contentW
     if (mi > 0) rows.push({ kind: "gap" });
     rows.push({ kind: "header", msgIndex: mi, role: msg.role, created: msg.created });
     for (const line of msg.lines) {
-      rows.push({ kind: "line", msgIndex: mi, text: line });
+      // Wrap long lines into multiple display rows
+      for (const segment of wrapLine(line, textWidth)) {
+        rows.push({ kind: "line", msgIndex: mi, text: segment });
+      }
     }
   }
 
@@ -298,12 +322,20 @@ function MessagePane({ messages, selectedIndex, lineOffset, paneHeight, contentW
     (r) => r.kind !== "gap" && r.msgIndex === selectedIndex
   );
 
-  // Compute visible window: anchor on selectedFirstRow, then apply lineOffset
+  // Compute visible window: anchor on selectedFirstRow, then apply lineOffset.
+  // Reserve 1 row each for the "↑ above" and "↓ below" scroll indicators when
+  // they will be shown, so they don't overflow the paneHeight budget and collide
+  // with the "Msg X/Y" footer rendered outside MessagePane.
   const rawStart = Math.max(0, selectedFirstRow + lineOffset);
+  const needsAbove = rawStart > 0;
+  // After reserving for the above indicator, check if a below indicator is also needed.
+  const heightAfterAbove = needsAbove ? paneHeight - 1 : paneHeight;
+  const wouldNeedBelow = rows.length > rawStart + heightAfterAbove;
+  const contentHeight = Math.max(1, heightAfterAbove - (wouldNeedBelow ? 1 : 0));
   // Don't scroll past end
-  const maxStart = Math.max(0, rows.length - paneHeight);
+  const maxStart = Math.max(0, rows.length - contentHeight);
   const windowStart = Math.min(rawStart, maxStart);
-  const windowEnd = Math.min(rows.length, windowStart + paneHeight);
+  const windowEnd = Math.min(rows.length, windowStart + contentHeight);
   const visibleRows = rows.slice(windowStart, windowEnd);
 
   const aboveCount = windowStart;
@@ -349,11 +381,11 @@ function MessagePane({ messages, selectedIndex, lineOffset, paneHeight, contentW
         }
 
         // row.kind === "line"
-        const displayText = (row.text || " ").slice(0, contentWidth - 3);
+        // Lines are pre-wrapped to textWidth so they fit in one terminal row
         return (
           <box key={`line-${row.msgIndex}-${windowStart + vi}`} height={1} paddingLeft={2} backgroundColor={bg}>
             <text fg={isSelected ? "#c0caf5" : "#787c99"}>
-              {displayText}
+              {row.text || " "}
             </text>
           </box>
         );

@@ -1,9 +1,26 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { useKeyboard, useRenderer } from "@opentui/react";
+import { useState, useRef, useCallback } from "react";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { spawnSync } from "child_process";
 import { writeFileSync, readFileSync, mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+
+// Wrap a single text line into segments of at most `maxWidth` characters.
+// Returns at least one element (empty string becomes [" "]).
+function wrapLine(line: string, maxWidth: number): string[] {
+  if (!line) return [" "];
+  const segments: string[] = [];
+  let remaining = line;
+  while (remaining.length > maxWidth) {
+    const slice = remaining.slice(0, maxWidth);
+    const lastSpace = slice.lastIndexOf(" ");
+    const breakAt = lastSpace > 0 ? lastSpace : maxWidth;
+    segments.push(remaining.slice(0, breakAt));
+    remaining = remaining.slice(breakAt === lastSpace ? lastSpace + 1 : breakAt);
+  }
+  if (remaining.length > 0) segments.push(remaining);
+  return segments;
+}
 
 type Props = {
   // Lines of text in the scratchpad
@@ -18,17 +35,44 @@ type Props = {
 
 export function Scratchpad({ lines, onChange, onSaved, focused, onFocus }: Props) {
   const renderer = useRenderer();
-  const [scrollTop, setScrollTop] = useState(0);
-  const scrollTopRef = useRef(scrollTop);
-  scrollTopRef.current = scrollTop;
+  const { width } = useTerminalDimensions();
   const linesRef = useRef(lines);
   linesRef.current = lines;
 
-  // Reset scroll when new content is appended
-  useEffect(() => {
-    // Scroll to bottom when content grows
-    setScrollTop(Math.max(0, lines.length - 1));
-  }, [lines.length]);
+  // Pre-wrap all logical lines for display. Each logical line may produce
+  // multiple display rows. We track display-row → logical-line mapping so
+  // j/k scroll moves by display rows.
+  // -2 for left/right borders, -2 for paddingLeft={1} on each text element (both sides)
+  const textWidth = Math.max(20, width - 4);
+  const displayRows: string[] = [];
+  for (const line of lines) {
+    for (const seg of wrapLine(line, textWidth)) {
+      displayRows.push(seg);
+    }
+  }
+  const displayRowsRef = useRef(displayRows);
+  displayRowsRef.current = displayRows;
+
+  // Track last-seen lines.length so we can detect when new content is appended
+  // and snap scroll to the bottom in the same render pass (no useEffect / second render).
+  const prevLinesLengthRef = useRef(lines.length);
+  const [scrollTop, setScrollTop] = useState(() => Math.max(0, displayRows.length - 1));
+  const scrollTopRef = useRef(scrollTop);
+
+  // Synchronously snap to bottom when new content is appended.
+  // Done inline (not in useEffect) so the first render of new content already
+  // uses the correct scrollTop — avoiding the double-render that caused
+  // Yoga to assign stale Y positions to row boxes in the live renderer.
+  let effectiveScrollTop = scrollTop;
+  if (lines.length !== prevLinesLengthRef.current) {
+    prevLinesLengthRef.current = lines.length;
+    effectiveScrollTop = Math.max(0, displayRows.length - 1);
+    // Schedule the state update so future j/k operations see the right base position
+    if (effectiveScrollTop !== scrollTop) {
+      setScrollTop(effectiveScrollTop);
+    }
+  }
+  scrollTopRef.current = effectiveScrollTop;
 
   const saveToFile = useCallback(() => {
     try {
@@ -91,8 +135,8 @@ export function Scratchpad({ lines, onChange, onSaved, focused, onFocus }: Props
       return;
     }
 
-    // j/k: line scroll
-    const total = linesRef.current.length;
+    // j/k: line scroll (over display rows)
+    const total = displayRowsRef.current.length;
     if (key.name === "j") {
       setScrollTop((t) => Math.min(Math.max(0, total - 1), t + 1));
       return;
@@ -117,23 +161,38 @@ export function Scratchpad({ lines, onChange, onSaved, focused, onFocus }: Props
   });
 
   const borderColor = focused ? "#e0af68" : "#414868";
+  // VISIBLE is the number of content rows shown. The outer box has a fixed height:
+  //   2 (border) + 1 (header) + VISIBLE (content rows) = VISIBLE + 3
   const VISIBLE = 10; // lines visible in scratchpad panel
 
-  const visStart = Math.max(0, Math.min(scrollTop, Math.max(0, lines.length - VISIBLE)));
-  const visLines = lines.slice(visStart, visStart + VISIBLE);
+  const visStart = Math.max(0, Math.min(effectiveScrollTop, Math.max(0, displayRows.length - VISIBLE)));
   const aboveCount = visStart;
-  const belowCount = Math.max(0, lines.length - (visStart + VISIBLE));
+  const belowCount = Math.max(0, displayRows.length - (visStart + VISIBLE));
+
+  // Build exactly VISIBLE display rows, replacing first/last with scroll indicators
+  // when content is scrolled. This keeps the panel height fixed.
+  // Each slot is padded to textWidth so that when content changes (e.g. on scroll),
+  // the trailing spaces actively overwrite stale terminal cells from the previous render.
+  // Without padding, shorter lines leave old characters visible in the right portion of
+  // the row — the OpenTUI renderer only paints non-space characters, so old cells persist.
+  const slots: string[] = [];
+  for (let i = 0; i < VISIBLE; i++) {
+    const rowIdx = visStart + i;
+    const raw = displayRows[rowIdx] ?? "";
+    slots.push(raw.padEnd(textWidth));
+  }
 
   return (
     <box
       flexDirection="column"
       border
       borderColor={borderColor}
-      height={VISIBLE + 4}  // +4 for borders + header + footer
+      // Fixed height: 2 (border) + 1 (header) + VISIBLE (content)
+      height={VISIBLE + 3}
       onMouseDown={onFocus}
     >
-      {/* Header */}
-      <box flexDirection="row" paddingX={1} backgroundColor="#1a1b26">
+      {/* Header — explicit height keeps Yoga layout stable */}
+      <box flexDirection="row" height={1} paddingX={1} backgroundColor="#1a1b26">
         <text fg="#e0af68">
           <strong>Scratchpad</strong>
         </text>
@@ -145,22 +204,39 @@ export function Scratchpad({ lines, onChange, onSaved, focused, onFocus }: Props
         <text fg="#565f89">  {lines.length} line{lines.length !== 1 ? "s" : ""}</text>
       </box>
 
-      {/* Content */}
-      <box flexDirection="column" flexGrow={1} paddingX={1}>
-        {aboveCount > 0 && (
-          <text fg="#565f89">↑ {aboveCount} more</text>
-        )}
+      {/* Content — flexDirection="column" with height={1} on each row.
+          Each slot is padded to textWidth so that when content changes (e.g. on scroll),
+          trailing spaces actively overwrite stale terminal cells from the previous render.
+          Without padding, shorter lines leave old characters visible at the right edge. */}
+      <box
+        key={lines.length === 0 ? "empty" : "content"}
+        flexDirection="column"
+        height={VISIBLE}
+        overflow="hidden"
+      >
         {lines.length === 0 ? (
-          <text fg="#414868">(empty — press y on a message to yank it here)</text>
+          <box height={1}>
+            <text fg="#414868">(empty — press y on a message to yank it here)</text>
+          </box>
         ) : (
-          visLines.map((line, i) => (
-            <box key={visStart + i}>
-              <text fg={focused ? "#c0caf5" : "#787c99"}>{line || " "}</text>
-            </box>
-          ))
-        )}
-        {belowCount > 0 && (
-          <text fg="#565f89">↓ {belowCount} more</text>
+          slots.map((row, i) => {
+            const isFirst = i === 0 && aboveCount > 0;
+            const isLast = i === VISIBLE - 1 && belowCount > 0;
+            const key = `${i}`;
+            return (
+              // backgroundColor forces OpenTUI to paint every cell in the row,
+              // clearing stale characters from previous renders at this Y position.
+              <box key={key} height={1} overflow="hidden" backgroundColor="#1a1b26">
+                {isFirst ? (
+                  <text fg="#565f89"> ↑ {aboveCount} more</text>
+                ) : isLast ? (
+                  <text fg="#565f89"> ↓ {belowCount} more</text>
+                ) : (
+                  <text fg={focused ? "#c0caf5" : "#787c99"}> {row}</text>
+                )}
+              </box>
+            );
+          })
         )}
       </box>
     </box>

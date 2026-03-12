@@ -8,7 +8,7 @@ Guidelines for agentic coding agents working in this repository.
 - **Runtime**: Bun (not Node.js)
 - **Language**: TypeScript (strict mode, ESNext)
 - **UI Framework**: OpenTUI (`@opentui/react` + `@opentui/core`) — renders React components to the terminal, not a browser
-- **CLI Framework**: oclif — exposes the CLI binary as `kg`
+- **CLI Framework**: oclif
 - **AI SDK**: `@opencode-ai/sdk`
 
 ## Commands
@@ -16,10 +16,11 @@ Guidelines for agentic coding agents working in this repository.
 ### Development
 
 ```bash
-# Run in watch mode (hot reload)
-bun run dev
-# equivalent: bun run --watch src/index.tsx
+# Run in dev mode (oclif based)
+./bin/dev.js oc
 ```
+
+Remember that there is no live update on code update. You need to either close or quit the program and then relaunch it.
 
 ### Testing
 
@@ -258,3 +259,7 @@ skill("opentui")
 
 The skill contains critical rules, decision trees, and detailed API references that
 are required to write correct OpenTUI code.
+
+# OpenTUI quirks
+
+**OpenTUI's live renderer does not repaint terminal cells that are covered by a `<text>` node with only background (no foreground character)** — i.e., trailing spaces in text content are not painted, and `<box>` nodes without `backgroundColor` don't force-fill their area. Adding `backgroundColor="#1a1b26"` to each row box ensures OpenTUI paints every cell in the row (clearing old characters).
